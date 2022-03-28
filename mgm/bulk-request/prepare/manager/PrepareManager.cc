@@ -24,6 +24,7 @@
 #include "PrepareManager.hh"
 #include "common/Constants.hh"
 #include "mgm/Stat.hh"
+#include "mgm/EosCtaReporter.hh"
 #include "mgm/bulk-request/response/QueryPrepareResponse.hh"
 #include <XrdOuc/XrdOucTList.hh>
 #include <XrdVersion.hh>
@@ -101,7 +102,7 @@ int PrepareManager::doPrepare(XrdSfsPrep& pargs, XrdOucErrInfo& error, const Xrd
                               nbFilesProvidedByUser);
   }
   std::string cmd = "mgm.pcmd=event";
-  std::list<std::pair<char**, char**>> pathsToPrepare;
+  std::list<std::tuple<char**, char**, EosCtaReporterPrepareReq>> pathsToPrepare;
   // Initialise the request ID for the Prepare request to the one provided by XRootD
   XrdOucString reqid(pargs.reqid);
   // Validate the event type
@@ -184,6 +185,15 @@ int PrepareManager::doPrepare(XrdSfsPrep& pargs, XrdOucErrInfo& error, const Xrd
     std::string orig_path = prep_path.c_str();
     std::unique_ptr<bulk::File> currentFile = nullptr;
 
+    EosCtaReporterPrepareReq eosLog([&](const std::string & in) {mMgmFsInterface->writeEosReportRecord(in);});
+    eosLog.addParam(eosLog.LOG, std::string(mMgmFsInterface->get_logId()));
+    eosLog.addParam(eosLog.PATH, orig_path);
+    eosLog.addParam(eosLog.RUID, vid.uid);
+    eosLog.addParam(eosLog.RGID, vid.gid);
+    eosLog.addParam(eosLog.TD, vid.tident.c_str());
+    eosLog.addParam(eosLog.HOST, mMgmFsInterface->get_host());
+    eosLog.addParam(eosLog.PREP_REQ_REQID, reqid.c_str());
+
     eos_info("msg=\"checking file exists\" path=\"%s\"", prep_path.c_str());
     {
       const char* inpath = prep_path.c_str();
@@ -202,14 +212,18 @@ int PrepareManager::doPrepare(XrdSfsPrep& pargs, XrdOucErrInfo& error, const Xrd
     XrdSfsFileExistence check;
 
     if (prep_path.length() == 0) {
+      std::string errorMsg = "prepare - path empty or uses forbidden characters";
       mMgmFsInterface->Emsg(epname, error, ENOENT,
-           "prepare - path empty or uses forbidden characters:",
+           errorMsg.append(":").c_str(),
            orig_path.c_str());
       if (error_counter == 0) {
         first_error = error;
       }
 
       error_counter++;
+      eosLog.addParam(eosLog.PREP_REQ_SENTTOWFE, false);
+      eosLog.addParam(eosLog.PREP_REQ_SUCCESSFUL, false);
+      eosLog.addParam(eosLog.PREP_REQ_ERROR, errorMsg);
       continue;
     }
 
@@ -229,6 +243,9 @@ int PrepareManager::doPrepare(XrdSfsPrep& pargs, XrdOucErrInfo& error, const Xrd
 
       error_counter++;
       addFileToBulkRequest(std::move(currentFile));
+      eosLog.addParam(eosLog.PREP_REQ_SENTTOWFE, false);
+      eosLog.addParam(eosLog.PREP_REQ_SUCCESSFUL, false);
+      eosLog.addParam(eosLog.PREP_REQ_ERROR, errorMsg);
       continue;
     }
 
@@ -239,6 +256,7 @@ int PrepareManager::doPrepare(XrdSfsPrep& pargs, XrdOucErrInfo& error, const Xrd
                        nullptr, attributes) == 0) {
       bool foundPrepareTag = false;
       std::string eventAttr = "sys.workflow." + event;
+      eosLog.addParam(eosLog.PREP_REQ_EVENT, event);
 
       for (const auto& attrEntry : attributes) {
         foundPrepareTag |= attrEntry.first.find(eventAttr) == 0;
@@ -246,13 +264,16 @@ int PrepareManager::doPrepare(XrdSfsPrep& pargs, XrdOucErrInfo& error, const Xrd
 
       if (foundPrepareTag) {
         pathsToPrepare.emplace_back(&(pptr->text),
-                                      optr != nullptr ? & (optr->text) : nullptr);
+                                      optr != nullptr ? & (optr->text) : nullptr,
+                                      std::move(eosLog));
       } else {
         // don't do workflow if no such tag
         std::ostringstream oss;
         oss << "No prepare workflow set on the directory " << eos::common::Path(prep_path.c_str()).GetParentPath();
         currentFile->setError(oss.str());
         addFileToBulkRequest(std::move(currentFile));
+        eosLog.addParam(eosLog.PREP_REQ_SENTTOWFE, false);
+        eosLog.addParam(eosLog.PREP_REQ_SUCCESSFUL, true);
         continue;
       }
     } else {
@@ -262,12 +283,16 @@ int PrepareManager::doPrepare(XrdSfsPrep& pargs, XrdOucErrInfo& error, const Xrd
         oss << "Unable to check the extended attributes of the directory "
             << eos::common::Path(prep_path.c_str()).GetParentPath();
         currentFile->setError(oss.str());
+        eosLog.addParam(eosLog.PREP_REQ_SENTTOWFE, false);
+        eosLog.addParam(eosLog.PREP_REQ_SUCCESSFUL, false);
+        eosLog.addParam(eosLog.PREP_REQ_ERROR, oss.str());
       }
       addFileToBulkRequest(std::move(currentFile));
       continue;
     }
 
     // check that we have write permission on path
+    // This can only be done after we confirm that there the directory contains a prepare workflow attribute
     if (mMgmFsInterface->_access(prep_path.c_str(), P_OK, error, vid, "")) {
       std::string errorMsg = "prepare - you don't have prepare permission";
       mMgmFsInterface->Emsg(epname, error, EPERM,
@@ -282,6 +307,9 @@ int PrepareManager::doPrepare(XrdSfsPrep& pargs, XrdOucErrInfo& error, const Xrd
 
       error_counter++;
       addFileToBulkRequest(std::move(currentFile));
+      eosLog.addParam(eosLog.PREP_REQ_SENTTOWFE, true);
+      eosLog.addParam(eosLog.PREP_REQ_SUCCESSFUL, true);
+      eosLog.addParam(eosLog.PREP_REQ_ERROR, errorMsg);
       continue;
     }
 
@@ -318,7 +346,7 @@ int PrepareManager::doPrepare(XrdSfsPrep& pargs, XrdOucErrInfo& error, const Xrd
   }
 
   //Trigger the prepare workflow
-  triggerPrepareWorkflow(pathsToPrepare,cmd,event,reqid,error,vid);
+  triggerPrepareWorkflow(pathsToPrepare, cmd, event, reqid, error, vid);
 
   int retc = SFS_OK;
 #if (XrdMajorVNUM(XrdVNUMBER) == 4 && XrdMinorVNUM(XrdVNUMBER) >= 10) || XrdMajorVNUM(XrdVNUMBER) >= 5
@@ -361,6 +389,7 @@ bool PrepareManager::ignorePrepareFailures() {
 
 void PrepareManager::addFileToBulkRequest(std::unique_ptr<File>&& file){
   //The normal PrepareManager does not have any bulk-request, do nothing
+  // Sub-classes may decide to implement this member function
 }
 
 const int PrepareManager::getPrepareActionsFromOpts(const int pargsOpts) const {
@@ -373,9 +402,12 @@ const bool PrepareManager::isStagePrepare() const {
   return mPrepareAction == PrepareAction::STAGE;
 }
 
-void PrepareManager::triggerPrepareWorkflow(const std::list<std::pair<char**, char**>> & pathsToPrepare, const std::string & cmd, const std::string &event, const XrdOucString & reqid, XrdOucErrInfo & error, const eos::common::VirtualIdentity& vid) {
-  for (auto& pathPair : pathsToPrepare) {
-    XrdOucString prep_path = (*pathPair.first ? *pathPair.first : "");
+void PrepareManager::triggerPrepareWorkflow(std::list<std::tuple<char**, char**, EosCtaReporterPrepareReq>> & pathsToPrepare, const std::string & cmd,
+                                            const std::string &event, const XrdOucString & reqid, XrdOucErrInfo & error,
+                                            const eos::common::VirtualIdentity& vid) {
+  for (auto& pathTuple : pathsToPrepare) {
+    EosCtaReporterPrepareReq eosLog = std::move(std::get<2>(pathTuple));
+    XrdOucString prep_path = (*std::get<0>(pathTuple) ? *std::get<0>(pathTuple) : "");
     {
       const char* inpath = prep_path.c_str();
       const char* ininfo = "";
@@ -385,8 +417,7 @@ void PrepareManager::triggerPrepareWorkflow(const std::list<std::pair<char**, ch
         prep_path = path;
       }
     }
-    XrdOucString prep_info = pathPair.second != nullptr ? (*pathPair.second ?
-                                                           *pathPair.second : "") : "";
+    XrdOucString prep_info = std::get<1>(pathTuple) != nullptr ? (*std::get<1>(pathTuple) ? *std::get<1>(pathTuple) : "") : "";
     eos_info("msg=\"about to trigger WFE\" path=\"%s\" info=\"%s\"",
              prep_path.c_str(), prep_info.c_str());
     XrdOucEnv prep_env(prep_info.c_str());
@@ -434,8 +465,15 @@ void PrepareManager::triggerPrepareWorkflow(const std::list<std::pair<char**, ch
 
     // Log errors but continue to process the rest of the files in the list
     if (ret_wfe != SFS_DATA) {
-      eos_err("Unable to prepare - synchronous prepare workflow error %s; %s",
-              prep_path.c_str(), error.getErrText());
+      std::ostringstream oss;
+      oss << "Unable to prepare - synchronous prepare workflow error " << prep_path.c_str() << "; " << error.getErrText();
+      eos_err(oss.str().c_str());
+      eosLog.addParam(eosLog.PREP_REQ_SENTTOWFE, false);
+      eosLog.addParam(eosLog.PREP_REQ_SUCCESSFUL, false);
+      eosLog.addParam(eosLog.PREP_REQ_ERROR, oss.str());
+    } else {
+      eosLog.addParam(eosLog.PREP_REQ_SENTTOWFE, true);
+      eosLog.addParam(eosLog.PREP_REQ_SUCCESSFUL, true);
     }
   }
 }

@@ -25,6 +25,7 @@
 #include "common/Path.hh"
 #include "StagerRmCmd.hh"
 #include "mgm/XrdMgmOfs.hh"
+#include "mgm/EosCtaReporter.hh"
 #include "mgm/Acl.hh"
 #include "common/Constants.hh"
 #include "namespace/interface/IView.hh"
@@ -42,6 +43,12 @@ eos::mgm::StagerRmCmd::ProcessRequest() noexcept
   eos::common::VirtualIdentity root_vid = eos::common::VirtualIdentity::Root();
 
   for (auto i = 0; i < stagerRm.file_size(); i++) {
+    EosCtaReporterStagerRm eosLog;
+    eosLog.addParam(eosLog.LOG, std::string(gOFS->logId));
+    eosLog.addParam(eosLog.RUID, mVid.uid);
+    eosLog.addParam(eosLog.RGID, mVid.gid);
+    eosLog.addParam(eosLog.TD, mVid.tident.c_str());
+
     const auto& file = stagerRm.file(i);
     std::string path;
     std::string err;
@@ -53,9 +60,10 @@ eos::mgm::StagerRmCmd::ProcessRequest() noexcept
       if (0 == path.length()) {
         errStream << "error: Received an empty string path" << std::endl;
         ret_c = EINVAL;
+        eosLog.addParam(eosLog.STAGERRM_ERROR, errStream.str());
         continue;
       }
-
+      eosLog.addParam(eosLog.PATH, path);
       break;
 
     case eos::console::StagerRmProto::FileProto::kFid:
@@ -65,15 +73,17 @@ eos::mgm::StagerRmCmd::ProcessRequest() noexcept
         errStream << "error: Received an unknown fid: value=" << file.fid() <<
                   std::endl;
         ret_c = EINVAL;
+        eosLog.addParam(eosLog.STAGERRM_ERROR, errStream.str());
         continue;
       }
-
+      eosLog.addParam(eosLog.PATH, path);
       break;
 
     default:
       errStream << "error: Received a file with neither a path nor an fid" <<
                 std::endl;
       ret_c = EINVAL;
+      eosLog.addParam(eosLog.STAGERRM_ERROR, errStream.str());
       continue;
     }
 
@@ -85,6 +95,7 @@ eos::mgm::StagerRmCmd::ProcessRequest() noexcept
       errStream << "error: you don't have 'p' acl flag permission on path '"
                 << cPath.GetParentPath() << "'" << std::endl;
       ret_c = EPERM;
+      eosLog.addParam(eosLog.STAGERRM_ERROR, errStream.str());
       continue;
     }
 
@@ -96,16 +107,19 @@ eos::mgm::StagerRmCmd::ProcessRequest() noexcept
       errStream << "error: unable to run exists on path '" << path << "'" <<
                 std::endl;
       ret_c = errno;
+      eosLog.addParam(eosLog.STAGERRM_ERROR, errStream.str());
       continue;
     }
 
     if (file_exists == XrdSfsFileExistNo) {
       errStream << "error: no such file with path '" << path << "'" << std::endl;
       ret_c = ENODATA;
+      eosLog.addParam(eosLog.STAGERRM_ERROR, errStream.str());
       continue;
     } else if (file_exists == XrdSfsFileExistIsDirectory) {
       errStream << "error: given path is a directory '" << path << "'" << std::endl;
       ret_c = EINVAL;
+      eosLog.addParam(eosLog.STAGERRM_ERROR, errStream.str());
       continue;
     }
 
@@ -116,6 +130,7 @@ eos::mgm::StagerRmCmd::ProcessRequest() noexcept
       errStream << "error: unable to run stat for replicas on path '" << path << "'"
                 << std::endl;
       ret_c = EINVAL;
+      eosLog.addParam(eosLog.STAGERRM_ERROR, errStream.str());
       continue;
     }
 
@@ -123,6 +138,7 @@ eos::mgm::StagerRmCmd::ProcessRequest() noexcept
     if ((buf.st_mode & EOS_TAPE_MODE_T) == 0) {
       errStream << "error: no tape replicas for file '" << path << "'" << std::endl;
       ret_c = EINVAL;
+      eosLog.addParam(eosLog.STAGERRM_ERROR, errStream.str());
       continue;
     }
 
@@ -138,6 +154,8 @@ eos::mgm::StagerRmCmd::ProcessRequest() noexcept
                                       eos::common::RETRIEVE_EVICT_COUNTER_NAME));
       }
 
+      eosLog.addParam(eosLog.STAGERRM_EVICTCOUNTER, evictionCounter);
+
       evictionCounter = std::max(0, evictionCounter - 1);
       fmd->setAttribute(eos::common::RETRIEVE_EVICT_COUNTER_NAME,
                         std::to_string(evictionCounter));
@@ -148,6 +166,7 @@ eos::mgm::StagerRmCmd::ProcessRequest() noexcept
     }
 
     if (evictionCounter > 0) {
+      eosLog.addParam(eosLog.STAGERRM_FILEREMOVED, false);
       continue;
     }
 
@@ -158,6 +177,7 @@ eos::mgm::StagerRmCmd::ProcessRequest() noexcept
                      path.c_str(), errInfo.getErrText());
       errStream << "error: could not delete all replicas of '" << path << "'" <<
                 std::endl;
+      eosLog.addParam(eosLog.STAGERRM_ERROR, errStream.str());
       ret_c = SFS_ERROR;
     } else {
       // reset the retrieves counter in case of success
@@ -174,6 +194,7 @@ eos::mgm::StagerRmCmd::ProcessRequest() noexcept
                        path.c_str(), eos::common::RETRIEVE_REQID_ATTR_NAME,
                        eos::common::RETRIEVE_REQTIME_ATTR_NAME);
       }
+      eosLog.addParam(eosLog.STAGERRM_FILEREMOVED, true);
     }
   }
 
