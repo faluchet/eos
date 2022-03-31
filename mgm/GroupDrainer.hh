@@ -24,21 +24,28 @@
 #pragma once
 #include <string_view>
 #include "common/AssistedThread.hh"
+#include "common/Logging.hh"
 
 namespace eos::mgm {
 
 namespace group_balancer {
-class IBalancerEngine;
+class BalancerEngine;
 } // group_balancer
 
-class GroupDrainer {
+
+
+class GroupDrainer: public eos::common::LogId {
 public:
   GroupDrainer(std::string_view spacename);
-  void GroupDrain();
+  ~GroupDrainer();
+  void GroupDrain(ThreadAssistant& assistant) noexcept;
+  bool IsUpdateNeeded(bool force=false);
 private:
+  std::chrono::time_point<std::chrono::steady_clock> mLastUpdated;
+  std::chrono::seconds mCacheExpiryTime {300};
   std::string mSpaceName;
   AssistedThread mThread;
-  std::unique_ptr<group_balancer::IBalancerEngine> mEngine;
+  std::unique_ptr<group_balancer::BalancerEngine> mEngine;
 };
 
 } // namespace eos::mgm
