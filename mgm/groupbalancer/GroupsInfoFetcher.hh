@@ -25,6 +25,7 @@
 #pragma once
 #include "mgm/groupbalancer/BalancerEngineTypes.hh"
 #include <memory>
+#include <string>
 
 namespace eos::mgm::group_balancer {
 // A simple interface to populate the group_size map per group. This is useful
