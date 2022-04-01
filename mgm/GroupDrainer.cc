@@ -98,9 +98,14 @@ void
 GroupDrainer::prepareTransfers()
 {
   uint64_t allowed_tx = numTx - mTransfers.size();
-  for (uint64_t i = 0; i < allowed_tx; ++i) {
-    prepareTransfer(i);
+  try {
+    for (uint64_t i = 0; i < allowed_tx; ++i) {
+      prepareTransfer(i);
+    }
+  } catch (std::exception& ec) {
+    eos_crit("msg=\"Got an exception while creating transfers=%s\"", ec.what());
   }
+
 }
 
 void
@@ -132,7 +137,7 @@ GroupDrainer::prepareTransfer(uint64_t index)
       fids->second.pop_back();
     }
   } else {
-    eos_info("\"msg=couldn't find files in fsid=%d", fsid);
+    eos_info("\"msg=couldn't find files in fsid=%d\"", fsid);
   }
 }
 
