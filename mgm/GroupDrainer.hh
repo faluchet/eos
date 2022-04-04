@@ -73,6 +73,7 @@ private:
   AssistedThread mThread;
   std::unique_ptr<group_balancer::BalancerEngine> mEngine;
   uint32_t numTx; // < Max no of transactions to keep in flight
+  double mThreshold;
   //! map tracking scheduled transfers, will be cleared periodically
   //! TODO: use a flat_map structure here, we are usually size capped to ~10K
   std::unordered_set<eos::common::FileId::fileid_t> mTransfers;

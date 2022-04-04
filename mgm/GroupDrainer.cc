@@ -17,7 +17,8 @@ using group_balancer::GroupStatus;
 
 GroupDrainer::GroupDrainer(std::string_view spacename) : mSpaceName(spacename),
                                                          mEngine(std::make_unique<group_balancer::StdDrainerEngine>()),
-                                                         numTx(10000)
+                                                         numTx(10000),
+                                                         mThreshold(0.0)
 {
   mThread.reset(&GroupDrainer::GroupDrain, this);
 }
@@ -34,7 +35,8 @@ GroupDrainer::GroupDrain(ThreadAssistant& assistant) noexcept
                                [](GroupStatus s) {
                                  return s == GroupStatus::DRAIN || s == GroupStatus::ON;
                                });
-
+  std::map<std::string,string, std::less<>> config_map = {{"threshold",std::to_string(mThreshold)}};
+  bool refresh_groups = true;
   while (!assistant.terminationRequested()) {
     if (!gOFS->mMaster->IsMaster()) {
       assistant.wait_for(std::chrono::seconds(60));
@@ -52,14 +54,17 @@ GroupDrainer::GroupDrain(ThreadAssistant& assistant) noexcept
       continue;
     }
 
-    if (isUpdateNeeded(mLastUpdated)) {
+    if (isUpdateNeeded(mLastUpdated, refresh_groups)) {
+      mEngine->configure(config_map);
       mEngine->populateGroupsInfo(fetcher.fetch());
+      refresh_groups = false;
     }
 
     if (!mEngine->canPick()) {
       eos_info("msg=\"Cannot pick, Empty source or target groups, check status "
-               "if this is not expected\"");
-      assistant.wait_for(std::chrono::seconds(10));
+               "if this is not expected\", %s",
+               mEngine->get_status_str(false, true).c_str());
+      assistant.wait_for(std::chrono::seconds(60));
       continue;
     }
 
