@@ -23,6 +23,7 @@
 
 #include "gtest/gtest.h"
 #include "mgm/convert/ConversionInfo.hh"
+#include "namespace/MDException.hh"
 
 //------------------------------------------------------------------------------
 // Test object construction
@@ -104,4 +105,16 @@ TEST(ConversionInfo, OptionalMembers)
     EXPECT_FALSE(info->mUpdateCtime);
   }
 
+}
+
+TEST(ConversionInfo, URLPath)
+{
+  using namespace eos::mgm;
+  std::string input = "000000000000000d:default.3#00100002~hybrid:tag1::tag3^someapp^!";
+  auto info = ConversionInfo::parseConversionString(input);
+  ASSERT_NE(nullptr, info);
+  XrdOucString proc_path="/eos/test/proc";
+  std::string result = SSTR(proc_path << "/" << info->ToString());
+  std::string expected = "/eos/test/proc/000000000000000d:default.3#00100002~hybrid:tag1::tag3^someapp^!";
+  EXPECT_EQ(expected, result);
 }
